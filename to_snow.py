@@ -123,10 +123,11 @@ def create_table_and_load_data(schema, table_name):
 
         # Add foreign keys if any
         for fk in schema.get('ForeignKeys', []):
+            fk_name = fk.get('ForeignKey', f"fk_{table_name}_{fk['ColumnName']}")
             cursor.execute(f"""
             ALTER TABLE {table_name}
-            ADD CONSTRAINT {fk['FOREIGN_KEY_NAME']} FOREIGN KEY ({fk['COLUMN_NAME']})
-            REFERENCES {fk['REFERENCED_TABLE_NAME']}({fk['REFERENCED_COLUMN_NAME']});
+            ADD CONSTRAINT {fk_name} FOREIGN KEY ({fk['ColumnName']})
+            REFERENCES {fk['ReferencedTableName']}({fk['ReferencedColumnName']});
             """)
 
         # Select and print data from the final table
@@ -146,33 +147,38 @@ def delete_object_from_s3(object_key):
         print(f"Error deleting object from S3: {e}")
 
 if __name__ == "__main__":
-    # List objects in S3 bucket
-    bucket = s3.Bucket(S3_BUCKET)
-    log_data_files = [filename.key for filename in bucket.objects.filter(Prefix='sql/data')]
-    print("Data files:", log_data_files)
+    try:
+        # List objects in S3 bucket
+        bucket = s3.Bucket(S3_BUCKET)
+        log_data_files = [filename.key for filename in bucket.objects.filter(Prefix='sql/data')]
+        print("Data files:", log_data_files)
 
-    # Get schema file and table name
-    schema_key, table_name = get_schema_file_and_table_name()
-    print(f"Fetching schema from S3 with key: {schema_key}")
+        # Get schema file and table name
+        schema_key, table_name = get_schema_file_and_table_name()
+        print(f"Fetching schema from S3 with key: {schema_key}")
 
-    # Fetch schema from S3
-    schema = fetch_schema_from_s3(schema_key)
+        # Fetch schema from S3
+        schema = fetch_schema_from_s3(schema_key)
 
-    # Initialize Snowflake connection
-    sf_conn = snowflake.connector.connect(
-        user=sf_user,
-        password=sf_password,
-        account=sf_account,
-        warehouse=sf_warehouse,
-        database=sf_database,
-        schema=sf_schema
-    )
+        # Initialize Snowflake connection
+        sf_conn = snowflake.connector.connect(
+            user=sf_user,
+            password=sf_password,
+            account=sf_account,
+            warehouse=sf_warehouse,
+            database=sf_database,
+            schema=sf_schema
+        )
 
-    # Create database and schema
-    create_database_and_schema(sf_database, sf_schema)
+        # Create database and schema
+        create_database_and_schema(sf_database, sf_schema)
 
-    # Create table and load data from S3
-    create_table_and_load_data(schema, table_name)
+        # Create table and load data from S3
+        create_table_and_load_data(schema, table_name)
 
-    # Close Snowflake connection
-    sf_conn.close()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        # Close Snowflake connection
+        if 'sf_conn' in locals() and sf_conn is not None:
+            sf_conn.close()
