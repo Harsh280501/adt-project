@@ -4,10 +4,21 @@ import json
 import pyodbc
 from decimal import Decimal
 from datetime import date, datetime
+import configparser
 
-def extract_from_sql_server():
+# Read the configuration file
+config_file_path = 'cluster.config'  # Path to your configuration file
+config = configparser.ConfigParser()
+config.read(config_file_path)
+
+# Extract the table name from the config file
+table_name = config.get('SQL', 'TABLE_NAME')
+
+# Function for getting data from sql
+def extract_from_sql_server(table_name):
+
     server = 'LAPTOP-OHGJHODB\\SQLEXPRESS'
-    database = 'EmployeeDB'
+    database = config.get('SQL', 'DATABASE_NAME')
     
     connection = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};'
                                 'SERVER=' + server + ';'
@@ -17,25 +28,25 @@ def extract_from_sql_server():
     cursor = connection.cursor()
     
     # Extract table data
-    cursor.execute("SELECT * FROM employees")
+    cursor.execute(f"SELECT * FROM {table_name}")
     rows = cursor.fetchall()
     
     columns = [column[0] for column in cursor.description]
     data = [dict(zip(columns, row)) for row in rows]
     
     # Extract schema information
-    schema_info = extract_schema_info(cursor)
+    schema_info = extract_schema_info(cursor, table_name)
     
     cursor.close()
     connection.close()
     
     return data, schema_info
 
-def extract_schema_info(cursor):
+def extract_schema_info(cursor, table_name):
     schema_info = {}
 
     # Get table columns and their data types
-    cursor.execute("""
+    cursor.execute(f"""
     SELECT 
         TABLE_NAME, 
         COLUMN_NAME, 
@@ -43,28 +54,32 @@ def extract_schema_info(cursor):
     FROM 
         INFORMATION_SCHEMA.COLUMNS 
     WHERE 
-        TABLE_NAME = 'employees'
+        TABLE_NAME = '{table_name}'
     """)
     columns = cursor.fetchall()
     schema_info['Columns'] = [dict(zip([column[0] for column in cursor.description], col)) for col in columns]
 
     # Get primary keys
-    cursor.execute("""
+    cursor.execute(f"""
     SELECT 
-        KU.TABLE_NAME AS TableName, 
-        KU.COLUMN_NAME AS ColumnName 
-    FROM 
-        INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC 
-        INNER JOIN 
-        INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KU
-        ON TC.CONSTRAINT_TYPE = 'PRIMARY KEY' AND
-        TC.CONSTRAINT_NAME = KU.CONSTRAINT_NAME
+         KU.table_name as TABLENAME
+        ,column_name as ColumnName
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC 
+
+    INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KU
+        ON TC.CONSTRAINT_TYPE = 'PRIMARY KEY' 
+        AND TC.CONSTRAINT_NAME = KU.CONSTRAINT_NAME 
+        AND KU.table_name='{table_name}'
+
+    ORDER BY 
+         KU.TABLE_NAME
+        ,KU.ORDINAL_POSITION
     """)
     primary_keys = cursor.fetchall()
     schema_info['PrimaryKeys'] = [dict(zip([column[0] for column in cursor.description], pk)) for pk in primary_keys]
 
-    # Get foreign keys
-    cursor.execute("""
+    # Get foreign keys related to the current table
+    cursor.execute(f"""
     SELECT 
         f.name AS ForeignKey,
         OBJECT_NAME(f.parent_object_id) AS TableName,
@@ -76,6 +91,8 @@ def extract_schema_info(cursor):
     INNER JOIN 
         sys.foreign_key_columns AS fc 
         ON f.object_id = fc.constraint_object_id
+    WHERE 
+        OBJECT_NAME(f.parent_object_id) = '{table_name}'
     """)
     foreign_keys = cursor.fetchall()
     schema_info['ForeignKeys'] = [dict(zip([column[0] for column in cursor.description], fk)) for fk in foreign_keys]
@@ -106,12 +123,14 @@ def produce_data_to_kafka(data, schema):
 
 if __name__ == "__main__":
     # Extract data and schema info
-    consumer_data, schema_info = extract_from_sql_server()
+    consumer_data, schema_info = extract_from_sql_server(table_name)
     
     # Produce data and schema to Kafka
     produce_data_to_kafka(consumer_data, schema_info)
     
     # Print the data and schema for verification
     df = pd.DataFrame(consumer_data)
+    print(f"Data for table {table_name}:")
     print(df.head())
+    print(f"Schema info for table {table_name}:")
     print(json.dumps(schema_info, indent=2))
